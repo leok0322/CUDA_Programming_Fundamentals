@@ -183,8 +183,40 @@ set(CMAKE_CXX_FLAGS_DEBUG  "-g -O0") # 传给 g++：  -g 生成 C++ 调试信息
 #   · --keep-dir 需要包含目标名的路径，全局变量无法引用目标名
 #   · 全局 --keep 会对所有目标生效，包括 CMake 自身的探测目标，产生干扰
 # ──────────────────────────────
+
+
+
+# ──────────────────────────────
+# CUDA Runtime 链接方式：静态 vs 动态
+#
+# CMAKE_CUDA_RUNTIME_LIBRARY 控制 libcudart 的链接方式，有三个合法值：
+#   Static（默认）→ 链接 libcudart_static.a
+#                   链接器命令：-lcudart_static -lrt -lpthread -ldl
+#                   优点：可执行文件自包含，无需目标机器安装 CUDA Runtime
+#                   缺点：二进制体积增大（libcudart_static.a 约 20MB）
+#
+#   Shared        → 链接 libcudart.so
+#                   链接器命令：-lcudart
+#                   优点：二进制体积小，多个进程共享同一份 .so 内存映射
+#                   缺点：目标机器必须安装匹配版本的 libcudart.so，
+#                         否则运行时报 "libcudart.so.XX: cannot open shared object"
+#
+#   None          → 不自动链接任何 cudart，完全手动控制
+#                   适合自行管理 CUDA Runtime 链接的高级场景
+#
+# 对应的 per-target 属性（覆盖全局设置）：
+#   set_target_properties(my_target PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
+#
+# 静态 vs 动态的选择依据：
+#   开发 / 调试阶段    → Shared（编译快，二进制小，目标机有 CUDA 环境）
+#   生产部署（离线环境）→ Static（无需依赖，自包含）
+#   Docker / HPC 集群  → Shared（镜像 / 模块已含 CUDA Runtime）
+# ──────────────────────────────
+set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)   # 动态链接 libcudart.so（链接器传 -lcudart）
+
 message(STATUS "构建类型：${CMAKE_BUILD_TYPE}")
 message(STATUS "CUDA Debug 标志：${CMAKE_CUDA_FLAGS_DEBUG}")
+message(STATUS "CUDA Runtime 链接：${CMAKE_CUDA_RUNTIME_LIBRARY}")
 
 # ──────────────────
 # GPU 架构
