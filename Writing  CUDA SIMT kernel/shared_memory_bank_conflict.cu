@@ -76,7 +76,7 @@ __global__ void kernel_no_conflict(const float* __restrict__ g_in,
 //   T2 → smem[32] → bank 0  ← 撞上 T0！
 //   T3 → smem[48] → bank 16 ← 撞上 T1！
 //   ...
-//   每个 bank 被 2 个线程访问 → 2-way conflict → 2 cycles（串行化两次）
+//   每个 bank 被 2 个线程访问 → 16-way conflict → 16 cycles（串行化16次）
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void kernel_2way_conflict(const float* __restrict__ g_in,
                                       float* __restrict__ g_out, int n)
@@ -90,7 +90,17 @@ __global__ void kernel_2way_conflict(const float* __restrict__ g_in,
     __syncthreads();
 
     // stride-16：T_i 访问 smem[i * 16 % 256]
-    // bank_id = (i * 16) % 32 → 每2个线程共享一个 bank
+    // bank_id = (tid * 16) % 32，周期 = 2（每隔 2 个线程 bank_id 循环一次）
+    //   tid=0 → bank 0,  tid=1 → bank 16
+    //   tid=2 → bank 0,  tid=3 → bank 16  （与 tid=0/1 重复）
+    //   ...
+    // 一个 warp（32 线程）内：32 / 2 = 16 个线程共享同一 bank → 16-way conflict
+    //
+    // % 256 的作用：循环回绕，让 256 个线程的索引映射回合法范围 0~255
+    //   不加 % 256：tid=16 → 16*16=256 越界，tid=255 → 255*16=4080 严重越界
+    //   加 % 256  ：tid=16 → 256%256=0（回绕到起点），所有索引始终在 0~255 内
+    //   同时使 bank conflict 模式在整个 block（256 线程）内持续重复，
+    //   而不是只在前 16 个线程中出现一次
     int idx = (tid * 16) % 256;
     if (gid < n)
         g_out[gid] = smem[idx] * 2.0f;
@@ -173,11 +183,44 @@ __global__ void kernel_broadcast(const float* __restrict__ g_in,
 #define TILE_DIM 32
 #define PADDING  1    // 每行多 1 个 float，打破 bank 对齐
 
+// g_in  ：原矩阵（M×N）的一维表示，row-major 布局
+//           g_in[row][col] = g_in[row * N + col]
+//           col→  0    1    2  ...  N-1
+//         row↓
+//           0   [ 0,   1,   2, ..., N-1 ]
+//           1   [ N,  N+1, N+2,..., 2N-1]
+//           ...
+//
+// g_out ：转置矩阵（N×M）的一维表示，row-major 布局
+//           原矩阵第 (row, col) 位置的元素，写到 g_out 的第 (col, row) 位置：
+//           g_out[col * M + row] = g_in[row * N + col]
+//           row→  0    1    2  ...  M-1
+//         col↓
+//           0   [ 0,   N,  2N, ...      ]
+//           1   [ 1,  N+1, 2N+1, ...   ]
+//           ...
+//
+// 两者都是 float*（一维指针），通过线性索引 row*width+col 模拟二维访问，
+// 即 C 语言二维数组展平为一维的标准 row-major 做法。
 __global__ void kernel_padded(const float* __restrict__ g_in,
                                float* __restrict__ g_out, int n)
 {
     // 每行 33 个 float（32 有效 + 1 padding）
-    __shared__ float smem[TILE_DIM][TILE_DIM + PADDING];  // smem是每一个block私有的，所以只要满足单个block就行了，和HBM不一样
+    // __shared__ 内存是 SM 片上 SRAM，每次 kernel 启动不做任何初始化 → 垃圾值。
+    // 与其他内存类型对比：
+    //   __shared__          垃圾值（不初始化）         ← 此处
+    //   __device__          零初始化（BSS 段规则）
+    //   __managed__         零初始化（BSS 段规则）
+    //   cudaMalloc          垃圾值（需 cudaMemset）
+    //   cudaMallocManaged   垃圾值（需手动初始化）
+    //   局部变量（寄存器）   垃圾值
+    // 实际使用中每个线程在 __syncthreads() 前写入自己负责的元素，
+    // 写完同步后再读，初始值无所谓。
+    // 只有边界处理导致部分元素无人写入时，才需要显式初始化为安全值。
+    //
+    // smem 是每个 block 私有的片上存储，声明大小只需满足单个 block 的需求，
+    // 与 HBM（Global Memory）需要覆盖全部数据不同。
+    __shared__ float smem[TILE_DIM][TILE_DIM + PADDING];
 
     int tid = threadIdx.x;
     int gid = blockIdx.x * blockDim.x + tid;
