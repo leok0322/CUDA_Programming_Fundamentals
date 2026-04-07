@@ -66,7 +66,7 @@ __global__ void kernel_coalesced(const float* __restrict__ in,
 //
 //   偏移 4 bytes 后：
 //   Sector 0: [byte 0  ~ 31 ] ← T0~T6 落入（7 threads）
-//   Sector 1: [byte 32 ~ 63 ] ← T7~T14 落入（跨越了 sector 边界！）
+//   Sector 1: [byte 32 ~ 63 ] ← T7~T14 落入（ T7 的数据在 byte 32，不在此 sector ，跨越了 sector 边界！）
 //   ...
 //   Sector 4: [byte 128~159] ← T31 落入（多出一个 sector）
 // Utilization = Bytes used by threads / Bytes fetched from DRAM
