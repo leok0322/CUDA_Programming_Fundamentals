@@ -2,3 +2,4 @@ cmake-build-debug/
 build/
 .idea/
 clion_external_libraries.md
+.vscode/
